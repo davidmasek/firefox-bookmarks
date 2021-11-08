@@ -1,22 +1,72 @@
 import json
+from typing import Optional
 import uuid
 import argparse
+import sys
+import requests
 from pathlib import Path
+import base64
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--data', required=True, type=Path, help='JSON file with bookmarks.')
 
 args = parser.parse_args()
 
-with open(args.data) as fh:
-    data = json.load(fh)
+MAX_FILENAME_LEN = 200
+
+icons_dir = Path('icons')
+icons_dir.mkdir(exist_ok=True)
+
+def get_favicon(url: str) -> Optional[str]:
+    # empty urls are not valid
+    if not url:
+        return None
+    # standardize some URIs used by Firefox
+    if url.startswith('fake-favicon-uri:'):
+        url = url.replace('fake-favicon-uri:', '', 1)
+
+    # deal with directly embedded image data 
+    if url.startswith('data:image'):
+        print('data:image currently not supported', file=sys.stderr)
+        return None
+    
+    # filter unsupported URIs (it still may be a valid URI but currently unsupporetd)
+    if not url.startswith('http'):
+        print(f'unexpected url: {url}', file=sys.stderr)
+        return None
+    
+    # convert url to valid filename with base64
+    file_name = base64.urlsafe_b64encode(url.encode('utf8')).decode('utf8')
+    if len(file_name) > MAX_FILENAME_LEN:
+        print(f'url {url} too long, cropping resulting filename', file=sys.stderr)
+        file_name = file_name[:MAX_FILENAME_LEN]
+
+    file_path = icons_dir / file_name
+    # don't re-download files (OK enough solution, doesn't deal with resource updates)
+    if file_path.exists():
+        return file_path
+
+    try:
+        with requests.get(url) as response:
+            if response.status_code == 200:
+                # encode to valid filename
+                with open(file_path, 'wb') as fh:
+                    fh.write(response.content)
+                return file_path
+            # else:
+            #     print(f'failed to download {url}, status={response.status_code}', file=sys.stderr)
+    except requests.exceptions.ConnectionError as ex:
+        print(f'cannot connect to {url}: {ex}', file=sys.stderr)
+
+    return None
 
 def traverse(node):
     title = node.get('title', '')
 
     uri = node.get('uri', '')
-    iconuri = ''
-    # iconuri = node.get('iconuri', '')
+    iconuri = node.get('iconuri', '')
+    iconpath = get_favicon(iconuri)
+
     has_children = 'children' in node and len(node['children']) > 0
 
     guid = node['guid']
@@ -50,8 +100,8 @@ def traverse(node):
         ''')
     else:
         img = ''
-        if iconuri:
-            img = f'<img src="{iconuri}" width=16 height=16>'
+        if iconpath:
+            img = f'<img src="{iconpath}">'
 
         print(f'''
         <li>
@@ -75,6 +125,7 @@ def start_traverse(root):
         <title>Bookmarks</title>
         <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@5.15.4/css/fontawesome.min.css" integrity="sha384-jLKHWM3JRmfMU0A5x5AkjWkw/EYfGUAGagvnfryNV3F9VqM98XiIH7VBGVoxVSc7" crossorigin="anonymous">
+        <link rel="stylesheet" href="main.css">
     </head>
     <body>
         <div class="card">
@@ -114,4 +165,7 @@ def start_traverse(root):
     ''')
 
 if __name__ == '__main__':
+    with open(args.data) as fh:
+        data = json.load(fh)
+
     start_traverse(data)
